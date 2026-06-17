@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Muffin Tidy default capabilities",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "opener:default",
+    "opener:allow-open-path",
+    "dialog:default",
+    "dialog:allow-open",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-read-dir",
+    "fs:scope-home-recursive",
+    "fs:scope-download-recursive"
+  ]
+}
