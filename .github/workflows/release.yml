@@ -1,6 +1,6 @@
 name: Release
 
-# 推送形如 v0.2.1 的标签时触发：构建 Windows 安装包并发布 GitHub Release
+# 推送形如 v0.2.1 的标签时触发：编译便携版单文件 exe 并发布 GitHub Release（不打安装包）
 on:
   push:
     tags:
@@ -34,15 +34,27 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Build & publish release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build standalone executable (no installer)
+        run: bun run tauri build --no-bundle
+
+      - name: Stage & rename exe
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/release/muffin-tidy-app.exe"
+          if (-not (Test-Path $exe)) {
+            $exe = (Get-ChildItem "src-tauri/target/release" -Filter *.exe |
+              Where-Object { $_.Name -notmatch 'build|deps' } | Select-Object -First 1).FullName
+          }
+          if (-not $exe) { throw "未找到编译出的 exe" }
+          $out = "Muffin-Tidy-${{ github.ref_name }}-x64.exe"
+          Copy-Item $exe $out
+          "ASSET=$out" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Publish GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # 仓库同时存在 bun.lock 与 pnpm-lock.yaml，显式指定用 bun 调 Tauri CLI
-          tauriScript: bun run tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Muffin Tidy ${{ github.ref_name }}"
-          releaseBody: "媒体文件整理工具 ${{ github.ref_name }} — Windows 安装包见下方 Assets。"
-          releaseDraft: false
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" "$env:ASSET" `
+            --title "Muffin Tidy ${{ github.ref_name }}" `
+            --notes "媒体文件整理工具 ${{ github.ref_name }} — 便携版单文件可执行程序（Windows x64，免安装，依赖系统自带的 WebView2，Win10/11 默认已有）。"
