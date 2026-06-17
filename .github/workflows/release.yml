@@ -39,6 +39,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # 仓库同时存在 bun.lock 与 pnpm-lock.yaml，显式指定用 bun 调 Tauri CLI
+          tauriScript: bun run tauri
           tagName: ${{ github.ref_name }}
           releaseName: "Muffin Tidy ${{ github.ref_name }}"
           releaseBody: "媒体文件整理工具 ${{ github.ref_name }} — Windows 安装包见下方 Assets。"
