@@ -51,6 +51,7 @@ jobs:
           "ASSET=$out" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
