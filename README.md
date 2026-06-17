@@ -15,7 +15,7 @@
 ![Rust](https://img.shields.io/badge/Rust-backend-CE412B?logo=rust&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows&logoColor=white)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Release](https://img.shields.io/github/v/release/i-mufeng/muffin-tidy-app?label=release&color=blue)
 
 </div>
 
