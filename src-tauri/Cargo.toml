@@ -1,6 +1,6 @@
 [package]
 name = "muffin-tidy-app"
-version = "0.2.1"
+version = "0.2.2"
 description = "Muffin Tidy - 媒体文件整理工具"
 authors = ["Mufeng"]
 edition = "2021"
