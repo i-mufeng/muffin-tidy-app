@@ -141,7 +141,6 @@
 import { ref, computed, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { useEventListener } from "@vueuse/core";
 import { useProjectStore } from "../stores/project";
 
@@ -278,7 +277,8 @@ function backToConfig() {
 async function reveal() {
   if (targetDir.value) {
     try {
-      await openPath(targetDir.value);
+      // 走 Rust 端 explorer：opener 的 path 作用域为空集，前端 openPath 会被 ForbiddenPath 拒绝
+      await invoke("reveal_path", { path: targetDir.value });
     } catch {
       /* 打开失败忽略 */
     }
@@ -286,12 +286,12 @@ async function reveal() {
 }
 
 async function openLog() {
-  if (summary.value?.log_path) {
-    try {
-      await openPath(summary.value.log_path);
-    } catch {
-      /* 打开失败忽略 */
-    }
+  if (!summary.value?.log_path) return;
+  try {
+    // 走 Rust 端默认程序打开：opener 的 path 作用域为空集，前端 openPath 会被 ForbiddenPath 拒绝
+    await invoke("open_path_default", { path: summary.value.log_path });
+  } catch (e) {
+    alert(`打开日志失败：${e}`);
   }
 }
 

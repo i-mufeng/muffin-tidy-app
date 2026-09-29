@@ -2,6 +2,7 @@ mod scanner;
 mod livephoto;
 mod thumb;
 mod export;
+mod portable;
 
 use tauri::http::{Request, Response};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -150,6 +151,42 @@ async fn export_files(
     .map_err(|e| e.to_string())?
 }
 
+/// 在系统文件管理器中打开目录。Windows 直接调用 explorer——本应用未给 opener 配置任何
+/// path 作用域（allow 列表为空集），前端 `openPath` 对**任何路径**（不分文件/目录）都会被
+/// `ForbiddenPath` 拒绝，故目录改走 Shell。explorer 即便成功退出码也常为非 0，因此只 spawn
+/// 不校验退出状态。
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+
+    cmd.arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 用系统默认程序打开单个文件（如导出日志 .log → 记事本）。
+///
+/// 直接走 opener 插件的 Rust 接口 `OpenerExt::open_path`——它**不经过** IPC 命令层
+/// (`commands::open_path`) 的 ACL 作用域校验。因为本应用未给 opener 配置 path 作用域
+/// （allow 列表为空集），前端若直接调 JS `openPath` 会被 `ForbiddenPath` 拒绝；改由此自定义
+/// 命令在 Rust 侧打开即可绕过。与 `reveal_path` 同属「绕过空作用域、改走 Rust」的一致做法。
+#[tauri::command]
+fn open_path_default<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 fn base64_jpeg(bytes: Vec<u8>) -> String {
     use base64::Engine;
     format!(
@@ -219,6 +256,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .register_uri_scheme_protocol("mtidy-mphoto", mphoto_protocol)
+        .setup(|_app| {
+            // 启动即清扫上次会话/崩溃残留的导入临时目录（比退出钩子更稳：崩溃也能清）。
+            // 启动时不可能有正在进行的导入，整目录删除是安全的。
+            let base = std::env::temp_dir().join("muffin-tidy-import");
+            if base.exists() {
+                let _ = std::fs::remove_dir_all(&base);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             scan_directory,
             cancel_scan,
@@ -226,6 +272,12 @@ pub fn run() {
             get_thumbnail,
             get_preview,
             export_files,
+            reveal_path,
+            open_path_default,
+            portable::pd_browse,
+            portable::pd_import,
+            portable::pd_cancel_import,
+            portable::pd_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
