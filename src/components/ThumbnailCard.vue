@@ -47,11 +47,12 @@
 
     <!-- 焦点指示边框 -->
     <div v-if="focused" class="focus-ring" />
+
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import { ref, watch, onUnmounted } from "vue";
 import type { ProjectFile } from "../stores/project";
 import { queueThumb } from "../composables/useThumbQueue";
 
@@ -69,21 +70,17 @@ const hovering = ref(false);
 const thumbSrc = ref<string | null>(null);
 let hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function loadThumb(file: ProjectFile | null) {
-  if (!file) { thumbSrc.value = null; return; }
-  const path = file.sourcePath;
+watch(() => props.file?.sourcePath, (path, _previous, onCleanup) => {
+  onMouseLeave();
   thumbSrc.value = null;
-  try {
-    const src = await queueThumb(path);
-    // 丢弃 virtua 回收后已切换的卡片结果
-    if (props.file?.sourcePath === path) thumbSrc.value = src;
-  } catch {
-    // 保持 null → 显示条纹占位
-  }
-}
-
-onMounted(() => loadThumb(props.file));
-watch(() => props.file, loadThumb);
+  if (!path) return;
+  const controller = new AbortController();
+  onCleanup(() => controller.abort());
+  queueThumb(path, controller.signal).then((src) => {
+    if (!controller.signal.aborted) thumbSrc.value = src;
+  }).catch(() => { /* Keep the placeholder on cancellation or decode failure. */ });
+}, { immediate: true });
+onUnmounted(onMouseLeave);
 
 function fmtDuration(secs: number): string {
   const t = Math.round(secs);
@@ -116,8 +113,10 @@ function onMouseLeave() {
   transition: opacity 0.15s;
 }
 .thumb-card:hover { background: var(--bg-card-hover); }
-.thumb-card.is-removed { opacity: 0.3; }
+.thumb-card.is-removed { opacity: 0.34; filter: grayscale(0.9); }
 .thumb-card.is-marked { box-shadow: inset 0 0 0 2px var(--marked); }
+.thumb-card.is-focused { box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(245, 158, 11, 0.26); }
+.thumb-card.is-focused.is-marked { box-shadow: 0 0 0 1px var(--accent), inset 0 0 0 2px var(--marked), 0 0 16px rgba(245, 158, 11, 0.26); }
 
 .thumb-media {
   width: 100%;
@@ -188,4 +187,5 @@ function onMouseLeave() {
   border-radius: 4px;
   pointer-events: none;
 }
+
 </style>

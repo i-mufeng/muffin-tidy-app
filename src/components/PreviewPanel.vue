@@ -5,7 +5,7 @@
       <div class="media-area">
         <!-- Live/Motion 视频模式 -->
         <video
-          v-if="file.liveType && showVideo && file.videoUrl"
+          v-if="(file.liveType || file.mediaType === 'vdo') && showVideo && file.videoUrl"
           :src="file.videoUrl"
           class="preview-media"
           autoplay
@@ -24,7 +24,7 @@
 
         <!-- Live 播放切换按钮 -->
         <button
-          v-if="file.liveType"
+          v-if="file.liveType || file.mediaType === 'vdo'"
           class="live-toggle"
           @click="showVideo = !showVideo"
         >
@@ -69,6 +69,14 @@
         <!-- 操作按钮 -->
         <div class="actions">
           <button
+            v-if="file.status === 'removed'"
+            class="btn btn-restore"
+            @click="store.restoreFile(store.focusedIndex)"
+          >
+            ↶ 恢复到工程
+          </button>
+          <button
+            v-else
             class="btn"
             :class="file.status === 'marked' ? 'btn-active' : ''"
             @click="store.toggleMark(store.focusedIndex)"
@@ -76,8 +84,8 @@
             ★ {{ file.status === 'marked' ? '已标记' : '标记' }}
           </button>
           <button
+            v-if="file.status !== 'removed'"
             class="btn btn-danger"
-            :disabled="file.status === 'removed'"
             @click="store.removeFile(store.focusedIndex)"
           >
             ✕ 从工程移除
@@ -87,35 +95,47 @@
     </template>
 
     <div v-else class="empty-hint">
-      选择一张图片查看详情
+      <svg viewBox="0 0 72 64" aria-hidden="true">
+        <rect x="8" y="10" width="56" height="44" rx="4" />
+        <circle cx="25" cy="25" r="4" />
+        <path d="m15 47 14-13 9 8 7-7 12 12" />
+      </svg>
+      <strong>{{ store.files.length ? '选择一张媒体查看详情' : '暂无媒体可预览' }}</strong>
+      <span>{{ store.files.length ? '点击缩略图或使用方向键选择' : '打开包含图片或视频的目录后开始整理' }}</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useElementSize, useLocalStorage } from "@vueuse/core";
-import { useProjectStore, needsRustConvert } from "../stores/project";
+import { useProjectStore } from "../stores/project";
+
+import { queueThumb, queuePreview } from "../composables/useThumbQueue";
 
 const store = useProjectStore();
 const file = computed(() => store.focusedFile);
 const showVideo = ref(false);
 const previewSrc = ref<string>("");
 
-watch(file, async (f) => {
+let previewRequest = 0;
+watch(() => file.value?.sourcePath, (path, _previous, onCleanup) => {
+  const request = ++previewRequest;
+  const controller = new AbortController();
+  let fullReady = false;
   showVideo.value = false;
-  if (!f) { previewSrc.value = ""; return; }
-  // 视频与 HEIC/RAW 同样需 Rust 端转换：视频提取首帧大图，图片走 WIC 解码
-  if (needsRustConvert(f.sourcePath) || f.mediaType === "vdo") {
-    try {
-      previewSrc.value = await invoke<string>("get_preview", { path: f.sourcePath });
-    } catch {
-      previewSrc.value = "";
-    }
-  } else {
-    previewSrc.value = convertFileSrc(f.sourcePath);
-  }
+  previewSrc.value = "";
+  if (!path) return;
+  const current = () => request === previewRequest && !controller.signal.aborted;
+  queueThumb(path, controller.signal).then((src) => {
+    if (current() && !fullReady) previewSrc.value = src;
+  }).catch(() => {});
+  const timer = setTimeout(() => {
+    queuePreview(path, controller.signal).then((src) => {
+      if (current()) { fullReady = true; previewSrc.value = src; }
+    }).catch(() => { /* Retain the thumbnail if preview decoding fails. */ });
+  }, 100);
+  onCleanup(() => { clearTimeout(timer); controller.abort(); });
 }, { immediate: true });
 
 const filename = computed(() =>
@@ -205,6 +225,22 @@ watch(panelH, () => {
   justify-content: center;
   background: #000;
 }
+
+.empty-hint {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.empty-hint svg { width: 72px; height: 64px; margin-bottom: 4px; opacity: 0.7; }
+.empty-hint svg rect, .empty-hint svg path, .empty-hint svg circle { fill: none; stroke: #666; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.empty-hint strong { color: var(--text-primary); font-size: 13px; font-weight: 600; }
+.empty-hint span { font-size: 11px; line-height: 1.45; }
 
 .preview-media {
   max-width: 100%;
@@ -298,15 +334,8 @@ watch(panelH, () => {
 }
 .btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .btn-active { border-color: var(--marked); color: var(--marked); }
+.btn-restore { border-color: var(--accent); color: var(--accent); }
 .btn-danger:hover { border-color: #ef4444; color: #ef4444; }
 .btn:disabled { opacity: 0.3; cursor: default; }
 
-.empty-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
 </style>

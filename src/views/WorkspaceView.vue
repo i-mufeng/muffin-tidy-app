@@ -1,5 +1,7 @@
 <template>
   <div class="workspace">
+    <ScanProgress v-if="store.isRefreshing" :progress="store.scanProgress" compact />
+    <div v-if="store.scanError" class="scan-error" role="alert">刷新失败：{{ store.scanError }}</div>
     <!-- 主区域 -->
     <div ref="mainRef" class="main-area" :class="{ dragging }">
       <ThumbnailGrid
@@ -30,6 +32,10 @@
 
     <!-- 导出对话框 -->
     <ExportDialog />
+
+    <Transition name="toast">
+      <div v-if="store.toast" class="toast" role="status">{{ store.toast }}</div>
+    </Transition>
   </div>
 </template>
 
@@ -40,6 +46,7 @@ import { useProjectStore } from "../stores/project";
 import { useKeyboard } from "../composables/useKeyboard";
 import ThumbnailGrid from "../components/ThumbnailGrid.vue";
 import PreviewPanel from "../components/PreviewPanel.vue";
+import ScanProgress from "../components/ScanProgress.vue";
 import StatusBar from "../components/StatusBar.vue";
 import Lightbox from "../components/Lightbox.vue";
 import ExportDialog from "../components/ExportDialog.vue";
@@ -97,6 +104,8 @@ watch(mainW, () => {
 </script>
 
 <style scoped>
+.scan-error { padding: 8px 12px; color: var(--text-primary); background: var(--bg-panel); font-size: 12px; }
+
 .workspace {
   display: flex;
   flex-direction: column;
@@ -145,4 +154,22 @@ watch(mainW, () => {
 .preview-area {
   flex-shrink: 0;
 }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 1200;
+  padding: 8px 14px;
+  border: 1px solid #4b3b1b;
+  border-radius: 6px;
+  background: rgba(31, 25, 14, 0.94);
+  color: #f8d38a;
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+.toast-enter-active, .toast-leave-active { transition: opacity .18s, transform .18s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 6px); }
 </style>

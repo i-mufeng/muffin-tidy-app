@@ -9,7 +9,7 @@
         {{ loading ? '扫描中…' : '📁 打开目录' }}
       </button>
 
-      <div v-if="error" class="error">{{ error }}</div>
+      <div v-if="error || store.scanError" class="error" role="alert">{{ error || store.scanError }}</div>
 
       <div class="hints">
         <div class="hint-row"><kbd>Space</kbd> 标记 / 取消标记</div>

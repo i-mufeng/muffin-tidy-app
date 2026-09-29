@@ -28,7 +28,7 @@
               <label class="flabel">导出范围</label>
               <div class="seg">
                 <button class="seg-btn" :class="{ on: scope === 'all' }" @click="scope = 'all'">
-                  全部保留 <b>{{ store.visibleFiles.length }}</b>
+                  全部保留 <b>{{ store.exportableFiles.length }}</b>
                 </button>
                 <button class="seg-btn" :class="{ on: scope === 'marked' }" @click="scope = 'marked'">
                   仅已标记 <b>{{ markedCount }}</b>
@@ -189,13 +189,13 @@ watch(
 );
 
 const markedCount = computed(
-  () => store.visibleFiles.filter((f) => f.status === "marked").length
+  () => store.files.filter((f) => f.status === "marked").length
 );
 
 const items = computed(() =>
   scope.value === "marked"
-    ? store.visibleFiles.filter((f) => f.status === "marked")
-    : store.visibleFiles
+    ? store.files.filter((f) => f.status === "marked")
+    : store.exportableFiles
 );
 
 const percent = computed(() => {

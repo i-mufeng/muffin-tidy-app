@@ -4,12 +4,51 @@ mod thumb;
 mod export;
 
 use tauri::http::{Request, Response};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ─────────────────────────── Tauri commands ─────────────────────────────────
 
+static SCAN_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, serde::Serialize)]
+struct ScanBatch {
+    files: Vec<scanner::ScannedFile>,
+    total: usize,
+    done: bool,
+}
+
 #[tauri::command]
-fn scan_directory(path: String) -> Result<Vec<scanner::ScannedFile>, String> {
-    scanner::scan(std::path::Path::new(&path)).map_err(|e| e.to_string())
+async fn scan_directory(
+    path: String,
+    on_progress: tauri::ipc::Channel<scanner::ScanProgress>,
+    on_files: tauri::ipc::Channel<ScanBatch>,
+) -> Result<(), String> {
+    let generation = SCAN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let files = scanner::scan(std::path::Path::new(&path), || {
+            SCAN_GENERATION.load(Ordering::Relaxed) != generation
+        }, |progress| { let _ = on_progress.send(progress); })
+        .map_err(|e| e.to_string())?;
+        // Bound each JSON payload; never serialize the entire library into one UI message.
+        let total = files.len();
+        let mut files = files.into_iter();
+        loop {
+            if SCAN_GENERATION.load(Ordering::Relaxed) != generation {
+                return Err("scan cancelled".into());
+            }
+            let batch = files.by_ref().take(256).collect();
+            let done = files.len() == 0;
+            on_files.send(ScanBatch { files: batch, total, done }).map_err(|e| e.to_string())?;
+            if done { return Ok(()); }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn cancel_scan() {
+    SCAN_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -19,49 +58,81 @@ struct PreloadProgress {
 }
 
 /// 扫描完成后受控预热缩略图缓存：仅 2 线程并发（避免瞬时压满 CPU/内存），
-/// 每完成一张通过 Channel 上报进度。前端据此显示进度条。
+/// 每 100ms 或全部完成时通过 Channel 上报进度，避免缓存命中时刷满 IPC。
 #[tauri::command]
 async fn preload_thumbnails(paths: Vec<String>, on_progress: tauri::ipc::Channel<PreloadProgress>) {
     let total = paths.len();
+    let generation = SCAN_GENERATION.load(Ordering::Relaxed);
     if total == 0 {
         let _ = on_progress.send(PreloadProgress { done: 0, total: 0 });
         return;
     }
     let _ = tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let done = AtomicUsize::new(0);
+        // 计数和发送共用一把锁，两个工作线程也不会发送倒序进度。
+        let progress = std::sync::Mutex::new((0usize, std::time::Instant::now()));
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(2)
             .build()
             .unwrap();
         pool.install(|| {
             paths.par_iter().for_each(|p| {
+                if SCAN_GENERATION.load(Ordering::Relaxed) != generation { return; }
+                let permit = ImagePermit::acquire();
+                // 等待并发名额期间也可能已经取消或切换了目录。
+                if SCAN_GENERATION.load(Ordering::Relaxed) != generation { return; }
                 let _ = thumb::get_thumb(std::path::Path::new(p));
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                let _ = on_progress.send(PreloadProgress { done: n, total });
+                drop(permit);
+                if SCAN_GENERATION.load(Ordering::Relaxed) != generation { return; }
+                let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+                progress.0 += 1;
+                if progress.0 == total || progress.1.elapsed() >= std::time::Duration::from_millis(100) {
+                    let _ = on_progress.send(PreloadProgress { done: progress.0, total });
+                    progress.1 = std::time::Instant::now();
+                }
             });
         });
     })
     .await;
 }
 
-/// Returns a base64-encoded JPEG thumbnail (320px, disk-cached).
-/// Handles JPEG/PNG/WebP/GIF/TIFF/BMP + HEIC/RAW via Windows WIC.
-#[tauri::command]
-fn get_thumbnail(path: String) -> Result<String, String> {
-    let bytes = thumb::get_thumb(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())?;
-    Ok(base64_jpeg(bytes))
+// 限制大图解码的并发数；等待发生在 blocking 线程，不阻塞窗口事件循环。
+static IMAGE_JOBS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static IMAGE_READY: std::sync::Condvar = std::sync::Condvar::new();
+
+struct ImagePermit;
+impl ImagePermit {
+    fn acquire() -> Self {
+        let mut active = IMAGE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        while *active >= 2 {
+            active = IMAGE_READY.wait(active).unwrap_or_else(|e| e.into_inner());
+        }
+        *active += 1;
+        Self
+    }
+}
+impl Drop for ImagePermit {
+    fn drop(&mut self) {
+        let mut active = IMAGE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        *active -= 1;
+        IMAGE_READY.notify_one();
+    }
 }
 
-/// Returns a base64-encoded JPEG for the preview panel (up to 2048px).
 #[tauri::command]
-fn get_preview(path: String) -> Result<String, String> {
-    let bytes = thumb::get_preview(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())?;
-    Ok(base64_jpeg(bytes))
+async fn get_thumbnail(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = ImagePermit::acquire();
+        thumb::get_thumb(std::path::Path::new(&path)).map(base64_jpeg).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_preview(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = ImagePermit::acquire();
+        thumb::get_preview(std::path::Path::new(&path)).map(base64_jpeg).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// 导出（复制整理）筛选保留的媒体文件到目标目录。
@@ -150,6 +221,7 @@ pub fn run() {
         .register_uri_scheme_protocol("mtidy-mphoto", mphoto_protocol)
         .invoke_handler(tauri::generate_handler![
             scan_directory,
+            cancel_scan,
             preload_thumbnails,
             get_thumbnail,
             get_preview,

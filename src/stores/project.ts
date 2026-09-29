@@ -40,12 +40,24 @@ interface ScanResult {
   exif_info: Record<string, string>;
 }
 
+const PRELOAD_LIMIT = 48;
+
+interface ScanBatch { files: ScanResult[]; total: number; done: boolean }
+
+export interface ScanProgress {
+  stage: "discovering" | "metadata" | "pairing" | "loading";
+  current: number;
+  total: number;
+}
+
 export const useProjectStore = defineStore("project", () => {
   const sourceDir = ref<string | null>(null);
   const files = ref<ProjectFile[]>([]);
   const focusedIndex = ref(0);
   const isScanning = ref(false);
-  const scanProgress = ref({ current: 0, total: 0 });
+  const isRefreshing = ref(false);
+  const scanProgress = ref<ScanProgress>({ stage: "discovering", current: 0, total: 0 });
+  const scanError = ref<string | null>(null);
 
   // 加载阶段状态机：idle → scanning → preloading → ready
   const phase = ref<"idle" | "scanning" | "preloading" | "ready">("idle");
@@ -59,10 +71,20 @@ export const useProjectStore = defineStore("project", () => {
 
   // 导出对话框开关（打开时挂起网格键盘）
   const exportOpen = ref(false);
+  const viewFilter = ref<"all" | "marked" | "removed">("all");
+  const toast = ref<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let scanRequestId = 0;
 
   const visibleFiles = computed(() =>
-    files.value.filter((f) => f.status !== "removed")
+    viewFilter.value === "removed"
+      ? files.value.filter((f) => f.status === "removed")
+      : viewFilter.value === "marked"
+        ? files.value.filter((f) => f.status === "marked")
+        : files.value.filter((f) => f.status !== "removed")
   );
+
+  const exportableFiles = computed(() => files.value.filter((f) => f.status !== "removed"));
 
   const stats = computed(() => ({
     total: files.value.length,
@@ -73,71 +95,180 @@ export const useProjectStore = defineStore("project", () => {
 
   const focusedFile = computed(() => visibleFiles.value[focusedIndex.value] ?? null);
 
+  async function appendScanResults(results: ScanResult[], requestId: number, mapped: ProjectFile[], total: number) {
+    for (let offset = 0; offset < results.length; offset += 500) {
+      // Allow painting and cancellation between batches, including before the first batch.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (requestId !== scanRequestId) return null;
+      mapped.push(...results.slice(offset, offset + 500).map((r): ProjectFile => ({
+        id: r.id,
+        sourcePath: r.source_path,
+        mediaType: r.media_type,
+        status: "normal",
+        captureTime: r.capture_time,
+        fileSize: r.file_size,
+        liveType: r.live_type,
+        videoPath: r.video_path,
+        videoUrl: r.video_path
+          ? r.live_type === "android"
+            ? `mtidy-mphoto://video?path=${encodeURIComponent(r.source_path)}`
+            : convertFileSrc(r.video_path)
+          : r.media_type === "vdo"
+            ? convertFileSrc(r.source_path)
+            : null,
+        duration: r.duration,
+        exifInfo: r.exif_info,
+      })));
+      scanProgress.value = { stage: "loading", current: mapped.length, total };
+    }
+    return mapped;
+  }
+
+  function scanChannel(requestId: number) {
+    const channel = new Channel<ScanProgress>();
+    channel.onmessage = (progress) => {
+      if (requestId === scanRequestId && isScanning.value && scanProgress.value.stage !== "loading") {
+        scanProgress.value = progress;
+      }
+    };
+    return channel;
+  }
+
+  async function scanFiles(path: string, requestId: number): Promise<ProjectFile[] | null> {
+    const mapped: ProjectFile[] = [];
+    let processing = Promise.resolve();
+    let finish!: () => void;
+    let fail!: (error: unknown) => void;
+    const delivered = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; });
+    const onFiles = new Channel<ScanBatch>();
+    onFiles.onmessage = (batch) => {
+      processing = processing.then(async () => {
+        if (requestId !== scanRequestId) return;
+        scanProgress.value = { stage: "loading", current: mapped.length, total: batch.total };
+        await appendScanResults(batch.files, requestId, mapped, batch.total);
+      });
+      processing.catch(fail);
+      if (batch.done) processing.then(finish, fail);
+    };
+    // Command completion and Channel delivery can arrive in different orders.
+    await Promise.all([
+      invoke<void>("scan_directory", { path, onProgress: scanChannel(requestId), onFiles }),
+      delivered,
+    ]);
+    return requestId === scanRequestId ? mapped : null;
+  }
+
   async function openDirectory(path: string) {
+    if (isScanning.value) return false;
+    const requestId = ++scanRequestId;
     sourceDir.value = path;
     phase.value = "scanning";
     isScanning.value = true;
-    scanProgress.value = { current: 0, total: 0 };
+    isRefreshing.value = false;
+    scanProgress.value = { stage: "discovering", current: 0, total: 0 };
+    scanError.value = null;
     files.value = [];
     history.value = [];
     focusedIndex.value = 0;
+    viewFilter.value = "all";
     preload.value = { done: 0, total: 0 };
 
-    let results: ScanResult[];
+    let mapped: ProjectFile[] | null;
     try {
-      results = await invoke("scan_directory", { path });
+      mapped = await scanFiles(path, requestId);
     } catch (e) {
+      if (requestId !== scanRequestId) return false;
+      ++scanRequestId; // Discard any already queued batches from a failed transfer.
+      scanError.value = String(e);
       // 扫描失败 → 退回首页并把错误抛给调用方
       phase.value = "idle";
       sourceDir.value = null;
       isScanning.value = false;
       throw e;
     }
+    if (requestId !== scanRequestId) return false;
+    if (!mapped || requestId !== scanRequestId) return false;
+    files.value = mapped;
     isScanning.value = false;
-
-    files.value = results.map((r) => ({
-      id: r.id,
-      sourcePath: r.source_path,
-      mediaType: r.media_type,
-      status: "normal",
-      captureTime: r.capture_time,
-      fileSize: r.file_size,
-      liveType: r.live_type,
-      videoPath: r.video_path,
-      videoUrl: r.video_path
-        ? r.live_type === "android"
-          ? `mtidy-mphoto://video?path=${encodeURIComponent(r.source_path)}`
-          : convertFileSrc(r.video_path)
-        : r.media_type === "vdo"
-          ? convertFileSrc(r.source_path)
-          : null,
-      duration: r.duration,
-      exifInfo: r.exif_info,
-    }));
 
     // 空目录直接就绪；否则进入受控预热阶段（带进度条）
     if (files.value.length === 0) {
       phase.value = "ready";
-      return;
+      return true;
     }
     phase.value = "preloading";
-    preload.value = { done: 0, total: files.value.length };
-    startPreload();
+    preload.value = { done: 0, total: Math.min(PRELOAD_LIMIT, files.value.length) };
+    startPreload(requestId);
+    return true;
+  }
+
+  async function refreshDirectory() {
+    if (!sourceDir.value || isScanning.value) return false;
+    const path = sourceDir.value;
+    const requestId = ++scanRequestId;
+    isScanning.value = true;
+    isRefreshing.value = true;
+    scanProgress.value = { stage: "discovering", current: 0, total: 0 };
+    scanError.value = null;
+
+    let mapped: ProjectFile[] | null;
+    try {
+      mapped = await scanFiles(path, requestId);
+    } catch (e) {
+      if (requestId !== scanRequestId) return false;
+      ++scanRequestId; // Discard any already queued batches from a failed transfer.
+      isScanning.value = false;
+      isRefreshing.value = false;
+      scanError.value = String(e);
+      throw e;
+    }
+    if (requestId !== scanRequestId) return false;
+
+    if (!mapped || requestId !== scanRequestId) return false;
+    // Read the latest statuses so edits made while refreshing are preserved.
+    const previousStatuses = new Map(files.value.map((file) => [file.sourcePath, file.status]));
+    for (const file of mapped) file.status = previousStatuses.get(file.sourcePath) ?? "normal";
+    files.value = mapped;
+    focusedIndex.value = 0;
+    history.value = [];
+    isScanning.value = false;
+    isRefreshing.value = false;
+    toast.value = `已刷新，共 ${files.value.length} 个媒体`;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast.value = null), 1800);
+    return true;
+  }
+
+  function cancelRefresh() {
+    if (!isRefreshing.value) return;
+    ++scanRequestId;
+    invoke("cancel_scan").catch(() => {});
+    isScanning.value = false;
+    isRefreshing.value = false;
+    toast.value = "已取消刷新";
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast.value = null), 1800);
+  }
+
+  function setFilter(filter: "all" | "marked" | "removed") {
+    viewFilter.value = filter;
+    focusedIndex.value = 0;
   }
 
   // 受控预热：Rust 端 2 线程生成缩略图缓存，Channel 回传进度
-  function startPreload() {
+  function startPreload(requestId: number) {
     const channel = new Channel<{ done: number; total: number }>();
     channel.onmessage = (msg) => {
+      if (requestId !== scanRequestId) return;
       preload.value = msg;
       if (msg.done >= msg.total && phase.value === "preloading") {
         phase.value = "ready";
       }
     };
-    const paths = files.value.map((f) => f.sourcePath);
+    const paths = files.value.slice(0, PRELOAD_LIMIT).map((f) => f.sourcePath);
     invoke("preload_thumbnails", { paths, onProgress: channel }).catch(() => {
       // 预热失败也允许进入，缩略图会按需懒加载
-      if (phase.value === "preloading") phase.value = "ready";
+      if (requestId === scanRequestId && phase.value === "preloading") phase.value = "ready";
     });
   }
 
@@ -171,10 +302,25 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  function restoreFile(index: number) {
+    const file = visibleFiles.value[index];
+    if (!file || file.status !== "removed") return;
+    const realIndex = files.value.indexOf(file);
+    history.value.push({ index: realIndex, prevStatus: "removed" });
+    files.value[realIndex].status = "normal";
+    if (focusedIndex.value >= visibleFiles.value.length) {
+      focusedIndex.value = Math.max(0, visibleFiles.value.length - 1);
+    }
+  }
+
   function undoLast() {
     const last = history.value.pop();
     if (!last) return;
+    const currentStatus = files.value[last.index].status;
     files.value[last.index].status = last.prevStatus;
+    toast.value = currentStatus === "removed" ? "已撤销移除" : currentStatus === "marked" ? "已撤销标记" : "已撤销操作";
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast.value = null), 1800);
   }
 
   function moveFocus(delta: number) {
@@ -203,7 +349,12 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function reset() {
+    const shouldCancelScan = sourceDir.value !== null;
+    ++scanRequestId;
+    if (shouldCancelScan) invoke("cancel_scan").catch(() => {});
     sourceDir.value = null;
+    scanError.value = null;
+    scanProgress.value = { stage: "discovering", current: 0, total: 0 };
     files.value = [];
     focusedIndex.value = 0;
     history.value = [];
@@ -211,12 +362,16 @@ export const useProjectStore = defineStore("project", () => {
     preload.value = { done: 0, total: 0 };
     viewerOpen.value = false;
     exportOpen.value = false;
+    viewFilter.value = "all";
+    toast.value = null;
+    isScanning.value = false;
+    isRefreshing.value = false;
   }
 
   return {
-    sourceDir, files, focusedIndex, isScanning, scanProgress, phase, preload, viewerOpen, exportOpen,
-    visibleFiles, stats, focusedFile,
-    openDirectory, skipPreload, toggleMark, removeFile, undoLast, moveFocus, setFocus,
+    sourceDir, files, focusedIndex, isScanning, isRefreshing, scanProgress, scanError, phase, preload, viewerOpen, exportOpen,
+    viewFilter, toast, visibleFiles, exportableFiles, stats, focusedFile,
+    openDirectory, refreshDirectory, cancelRefresh, setFilter, skipPreload, toggleMark, removeFile, restoreFile, undoLast, moveFocus, setFocus,
     openViewer, closeViewer, openExport, closeExport, reset,
   };
 });

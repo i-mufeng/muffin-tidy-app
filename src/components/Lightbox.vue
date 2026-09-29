@@ -6,7 +6,7 @@
         <div class="v-top">
           <span class="counter">{{ store.focusedIndex + 1 }} / {{ len }}</span>
           <div class="top-actions">
-            <button v-if="file.liveType" class="tbtn" @click="showVideo = !showVideo">
+            <button v-if="file.liveType || file.mediaType === 'vdo'" class="tbtn" @click="showVideo = !showVideo">
               {{ showVideo ? '🖼 静图' : '▶ 动态' }}
             </button>
             <button
@@ -33,7 +33,7 @@
                 />
                 <!-- 动态视频 -->
                 <video
-                  v-if="file.liveType && showVideo && file.videoUrl"
+                  v-if="(file.liveType || file.mediaType === 'vdo') && showVideo && file.videoUrl"
                   class="layer full ready"
                   :src="file.videoUrl"
                   autoplay
@@ -42,7 +42,7 @@
                   playsinline
                   controls
                 />
-                <!-- 原图：加载完成后淡入覆盖缩略图 -->
+                <!-- 有界尺寸预览：加载完成后淡入覆盖缩略图 -->
                 <img
                   v-else-if="fullAt(store.focusedIndex)"
                   class="layer full"
@@ -93,10 +93,9 @@
 
 <script setup lang="ts">
 import { ref, computed, reactive, watch } from "vue";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useElementSize, useEventListener } from "@vueuse/core";
-import { useProjectStore, needsRustConvert } from "../stores/project";
-import { queueThumb } from "../composables/useThumbQueue";
+import { useProjectStore } from "../stores/project";
+import { queueThumb, queuePreview } from "../composables/useThumbQueue";
 
 const store = useProjectStore();
 const visible = computed(() => store.visibleFiles);
@@ -123,25 +122,21 @@ function fullAt(i: number): string {
   return p ? fullByPath[p] ?? "" : "";
 }
 
-async function ensureThumb(i: number) {
+async function ensureThumb(i: number, signal: AbortSignal) {
   const p = pathAt(i);
   if (!p || thumbByPath[p]) return;
   try {
-    thumbByPath[p] = await queueThumb(p);
-  } catch {
-    /* 占位条纹 */
-  }
+    const src = await queueThumb(p, signal);
+    if (!signal.aborted) thumbByPath[p] = src;
+  } catch { /* Keep the placeholder. */ }
 }
-async function ensureFull(i: number) {
+async function ensureFull(i: number, signal: AbortSignal) {
   const p = pathAt(i);
   if (!p || fullByPath[p]) return;
   try {
-    fullByPath[p] = needsRustConvert(p)
-      ? await invoke<string>("get_preview", { path: p })
-      : convertFileSrc(p);
-  } catch {
-    /* 保底用缩略图垫底 */
-  }
+    const src = await queuePreview(p, signal);
+    if (!signal.aborted) fullByPath[p] = src;
+  } catch { /* Retain the thumbnail. */ }
 }
 
 // 胶片条窗口：当前 ±6（多缓冲以保证滑动连续），可视区域约 ±3
@@ -212,15 +207,24 @@ watch(() => store.focusedIndex, () => {
   showVideo.value = false;
 });
 
-// 打开 / 切换时预取窗口缩略图 + 当前及相邻原图
+// Keep only the visible filmstrip and nearby previews, including after closing.
 watch(
-  () => [store.viewerOpen, store.focusedIndex] as const,
-  ([open]) => {
+  () => [store.viewerOpen, file.value?.sourcePath, ...windowIndices.value.map(pathAt)] as const,
+  ([open], _previous, onCleanup) => {
+    const controller = new AbortController();
+    const keepThumbs = new Set(open ? windowIndices.value.map(pathAt) : []);
+    const keepFull = new Set(open ? [-1, 0, 1].map((offset) => pathAt(store.focusedIndex + offset)) : []);
+    for (const path of Object.keys(thumbByPath)) if (!keepThumbs.has(path)) delete thumbByPath[path];
+    for (const path of Object.keys(fullByPath)) if (!keepFull.has(path)) delete fullByPath[path];
+    showVideo.value = false;
     if (!open) return;
-    windowIndices.value.forEach(ensureThumb);
-    ensureFull(store.focusedIndex);
-    ensureFull(store.focusedIndex - 1);
-    ensureFull(store.focusedIndex + 1);
+    // The focused thumbnail precedes neighboring tiles in the work queue.
+    void ensureThumb(store.focusedIndex, controller.signal);
+    windowIndices.value.forEach((i) => { void ensureThumb(i, controller.signal); });
+    const timer = setTimeout(() => {
+      void ensureFull(store.focusedIndex, controller.signal);
+    }, 100);
+    onCleanup(() => { clearTimeout(timer); controller.abort(); });
   },
   { immediate: true }
 );

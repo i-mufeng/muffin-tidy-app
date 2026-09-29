@@ -3,17 +3,17 @@
     <div class="card">
       <div class="dir">{{ store.sourceDir }}</div>
 
-      <!-- 扫描阶段：尚不知道总数 -->
+      <!-- 扫描阶段 -->
       <template v-if="store.phase === 'scanning'">
         <div class="logo spin">🔍</div>
-        <div class="phase-text">正在扫描目录…</div>
-        <div class="sub">识别图片 / 视频 / 实况照片</div>
+        <ScanProgress :progress="store.scanProgress" />
+        <button class="btn-ghost scan-cancel" @click="store.reset()">取消扫描</button>
       </template>
 
       <!-- 预热阶段：生成缩略图缓存，带进度条 -->
       <template v-else>
         <div class="logo">🖼️</div>
-        <div class="phase-text">正在生成预览缓存</div>
+        <div class="phase-text">正在准备首屏预览</div>
         <div class="progress-track">
           <div class="progress-fill" :style="{ width: percent + '%' }" />
         </div>
@@ -21,7 +21,7 @@
           {{ store.preload.done }} / {{ store.preload.total }}
           <span class="pct">({{ percent }}%)</span>
         </div>
-        <div class="sub">已缓存的图片进入后可秒开</div>
+        <div class="sub">其余图片在浏览时加载</div>
 
         <div class="actions">
           <button class="btn-ghost" @click="store.reset()">← 返回</button>
@@ -34,6 +34,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import ScanProgress from "../components/ScanProgress.vue";
 import { useProjectStore } from "../stores/project";
 
 const store = useProjectStore();
@@ -63,13 +64,15 @@ const percent = computed(() => {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  min-width: 420px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
 }
 
 .dir {
   font-size: 12px;
   color: var(--text-secondary);
-  max-width: 380px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -128,6 +131,7 @@ const percent = computed(() => {
   color: var(--text-secondary);
 }
 .btn-ghost:hover { color: var(--text-primary); }
+.scan-cancel { margin-top: 8px; }
 .btn-skip {
   background: var(--accent);
   color: #000;

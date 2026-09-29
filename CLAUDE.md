@@ -18,7 +18,7 @@ Stack: Tauri 2 (Rust backend) + Vue 3 `<script setup>` + Pinia + Tailwind v4 + T
 - **Typecheck:** `bun run build` runs `vue-tsc --noEmit && vite build` (no standalone lint/typecheck script — this is the gate).
 - **Rust-only check:** `cargo check` / `cargo build` inside `src-tauri/`.
 
-There is **no test framework** wired up (no test script, no test files). Don't assume `bun test` / `cargo test` do anything meaningful yet.
+Regression checks: `bun test tests/project-scan.test.ts tests/media-queue.test.ts` and `cargo test --manifest-path src-tauri/Cargo.toml --lib`. Large-library validation and optional browser checks are documented in `docs/scan-responsiveness.md`.
 
 ## Architecture
 
@@ -39,16 +39,16 @@ Android Motion Photos store the MP4 *appended inside the JPEG*. `mphoto_protocol
 
 ### Frontend (`src/`)
 
-- **`stores/project.ts`** — one Pinia store = all app state (files, `focusedIndex`, phase, undo history, viewer flag). The **phase state machine** `idle → scanning → preloading → ready` drives view switching in `App.vue`. `openDirectory()` invokes the scan, maps snake_case `ScanResult` → camelCase `ProjectFile`, then `startPreload()` warms the thumbnail cache (Rust-side, 2 threads, progress via `Channel`; user-skippable).
+- **`stores/project.ts`** — one Pinia store = all app state (files, `focusedIndex`, phase, undo history, viewer flag). The **phase state machine** `idle → scanning → preloading → ready` drives view switching in `App.vue`. `openDirectory()` invokes the scan, maps snake_case `ScanResult` → camelCase `ProjectFile`, then `startPreload()` warms at most the first 48 thumbnail cache entries (Rust-side, 2 threads, progress via `Channel`; user-skippable).
 - **Triage model:** every file has status `normal | marked | removed`. `removed` means *removed from the working set, NOT deleted from disk*; `visibleFiles` filters it out. `history` stacks status changes for Ctrl+Z undo.
 - **`components/ThumbnailGrid.vue`** — virtualized via **`virtua`** `VList`, grouped into rows by computed column count. Ctrl/⌘+wheel = continuous zoom (adjusts persisted `thumbSize`, which redefines columns).
-- **`composables/useThumbQueue.ts`** — global semaphore (max 4 concurrent) around `get_thumbnail` invokes so scrolling doesn't flood the backend.
+- **`composables/useThumbQueue.ts`** — bounded, cancellable, deduplicated queues around `get_thumbnail` (4 active / 256 waiting) and `get_preview` (1 active / 8 waiting).
 - **`composables/useKeyboard.ts`** — global shortcuts (↑↓←→ navigate, Space mark, D/Del remove, Ctrl+Z undo). Suspended while the Lightbox is open — **`Lightbox.vue` owns its own keydown handler** so the two never double-fire.
-- **Src resolution rule (repeated in `PreviewPanel` & `Lightbox`):** natively-decodable formats use `convertFileSrc(path)` directly; WIC formats and videos must round-trip through Rust (`get_preview`/`get_thumbnail` → base64). `needsRustConvert()` + `WIC_EXTS` in the store is the single source of truth for which path a file takes.
+- **Preview source rule:** still images use Rust-generated thumbnails/previews (320/2048px) with bounded queues and short debounce; the lightbox retains only nearby assets. Original video URLs are used for playback.
 
 ### Frontend ↔ backend data contract
 
-Rust `ScannedFile` is serialized `snake_case`; the store maps it to a `camelCase` `ProjectFile`. Enums must stay in sync on both sides: `MediaType` = `img|vdo|lpo`, `LiveType` = `apple|android|huawei`. Changing either enum means editing both `scanner.rs` and `stores/project.ts`.
+The async `scan_directory` command accepts `onProgress` and `onFiles` Channels and returns no file array. `onFiles` receives `{ files, total, done }`, with at most 256 records per batch and an explicit final batch (including for an empty directory). The frontend waits for both command success and final batch processing. Rust `ScannedFile` is serialized `snake_case`; the store maps it to a `camelCase` `ProjectFile`. Enums must stay in sync on both sides: `MediaType` = `img|vdo|lpo`, `LiveType` = `apple|android|huawei`. Changing either enum means editing both `scanner.rs` and `stores/project.ts`.
 
 ### Export pipeline (`export.rs`)
 

@@ -14,6 +14,7 @@ export function useKeyboard(cols: () => number) {
     switch (e.key) {
       case "e":
       case "E":
+        if (store.exportableFiles.length === 0) break;
         e.preventDefault();
         store.openExport();
         break;
@@ -25,12 +26,14 @@ export function useKeyboard(cols: () => number) {
 
       case " ":
         e.preventDefault();
-        store.toggleMark(store.focusedIndex);
+        if (store.viewFilter === "removed") store.restoreFile(store.focusedIndex);
+        else store.toggleMark(store.focusedIndex);
         break;
 
       case "d":
       case "D":
       case "Delete":
+        if (store.viewFilter === "removed") break;
         e.preventDefault();
         store.removeFile(store.focusedIndex);
         break;
