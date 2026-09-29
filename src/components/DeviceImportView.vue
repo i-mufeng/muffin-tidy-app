@@ -2,10 +2,10 @@
   <Teleport to="body">
     <Transition name="dlg">
       <div v-if="store.importOpen" class="overlay" @click.self="tryClose">
-        <div class="panel">
+        <div ref="panel" class="panel" role="dialog" aria-modal="true" aria-labelledby="device-import-title" tabindex="-1" @keydown="onDialogKey">
           <div class="dlg-head">
-            <span class="dlg-title">📱 从手机导入</span>
-            <button class="x" :disabled="view === 'importing'" @click="tryClose" title="关闭 (Esc)">✕</button>
+            <span id="device-import-title" class="dlg-title">📱 从手机导入</span>
+            <button class="x" :disabled="view === 'importing'" @click="tryClose" aria-label="关闭手机导入" title="关闭 (Esc)">✕</button>
           </div>
 
           <!-- 设备列表：去目录浏览，选设备 → 自动定位存储根导入 -->
@@ -13,16 +13,17 @@
             <div class="crumbs">
               <span class="crumb-label">便携设备</span>
               <span class="spacer" />
-              <button class="btn xs ghost" :disabled="loading" @click="reload" title="刷新">↻</button>
+              <button class="btn xs ghost" :disabled="loading || supported === false" @click="reload" aria-label="刷新设备" title="刷新">↻</button>
             </div>
 
-            <div v-if="error" class="warn">⚠ {{ error }}</div>
-            <div v-if="loading" class="muted">加载中…</div>
+            <div v-if="error" class="warn" role="alert">⚠ {{ error }}</div>
+            <div v-if="!supported && !loading && !error" class="empty">手机 USB 直连目前仅支持 Windows。请先将照片复制到电脑，再用「打开目录」整理。</div>
+            <div v-else-if="loading" class="muted" role="status">加载中…</div>
 
-            <template v-else>
+            <template v-else-if="!error && supported">
               <div v-if="entries.length === 0" class="empty">
                 未检测到便携设备。<br />
-                请用 USB 连接手机，iPhone 需解锁并点「信任此电脑」，然后点 ↻ 刷新。
+                请用 USB 连接并解锁手机。iPhone 点「信任此电脑」，Android 选择「文件传输」，然后刷新。
               </div>
               <ul v-else class="list">
                 <li v-for="e in entries" :key="e.id" class="row">
@@ -38,18 +39,19 @@
           <div v-else class="dlg-body running">
             <div class="run-logo">📥</div>
             <div class="run-text">{{ cancelling ? '正在取消…' : progress.phase === 'counting' ? '正在统计文件…' : '正在从手机复制…' }}</div>
-            <div class="progress-track">
-              <div class="progress-fill" :style="{ width: percent + '%' }" />
+            <div class="progress-track" role="progressbar" aria-label="手机导入进度" :aria-valuenow="indeterminate ? undefined : percent" :aria-valuemin="0" :aria-valuemax="100">
+              <div class="progress-fill" :class="{ indeterminate }" :style="{ width: indeterminate ? '35%' : percent + '%' }" />
             </div>
-            <div class="run-counter">
+            <div v-if="!indeterminate" class="run-counter">
               {{ progress.done_files }} / {{ progress.total_files }} <span class="pct">({{ percent }}%)</span>
             </div>
-            <div class="run-current">{{ mb(progress.done_bytes) }} · MTP 传输较慢，请耐心等待</div>
+            <div class="run-current">{{ mb(progress.done_bytes) }} · USB 传输中，请保持手机连接</div>
           </div>
 
+          <div v-if="view === 'importing' && error" class="warn run-error" role="alert">{{ error }}</div>
           <div class="dlg-foot">
             <template v-if="view === 'browse'">
-              <span class="foot-hint">选择设备后将自动导入其全部照片</span>
+              <span class="foot-hint">将复制设备内容到本机临时目录</span>
               <button class="btn ghost" @click="tryClose">取消</button>
             </template>
             <template v-else>
@@ -66,148 +68,119 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { useEventListener } from "@vueuse/core";
 import { useProjectStore } from "../stores/project";
 
-interface PortableEntry {
-  name: string;
-  id: string;
-  is_folder: boolean;
-  is_filesystem: boolean;
-}
-interface ImportProgress {
-  phase: string;
-  done_files: number;
-  total_files: number;
-  done_bytes: number;
-}
-interface ImportResult {
-  temp_dir: string;
-  file_count: number;
-  elapsed_ms: number;
-  cancelled: boolean;
-}
-
+interface PortableEntry { name: string; id: string; is_folder: boolean; is_filesystem: boolean }
+interface ImportProgress { phase: string; done_files: number; total_files: number; done_bytes: number }
+interface ImportResult { temp_dir: string; file_count: number; elapsed_ms: number; cancelled: boolean }
 const store = useProjectStore();
-
+const panel = ref<HTMLElement | null>(null);
 const view = ref<"browse" | "importing">("browse");
 const entries = ref<PortableEntry[]>([]);
 const loading = ref(false);
+const supported = ref<boolean | null>(null);
 const cancelling = ref(false);
 const error = ref<string | null>(null);
 const progress = ref<ImportProgress>({ phase: "counting", done_files: 0, total_files: 0, done_bytes: 0 });
-
-// 每次打开复位并枚举设备
-watch(
-  () => store.importOpen,
-  (openNow) => {
-    if (openNow) {
-      view.value = "browse";
-      error.value = null;
-      load(null);
-    }
+let generation = 0;
+let returnFocus: HTMLElement | null = null;
+const indeterminate = computed(() => progress.value.phase === "counting" || progress.value.total_files <= 0);
+const percent = computed(() => Math.max(0, Math.min(99, Math.floor(progress.value.done_files / (progress.value.total_files || 1) * 100))));
+function mb(b: number) { return (b / 1048576).toFixed(1) + " MB"; }
+watch(() => store.importOpen, async (openNow) => {
+  generation++;
+  if (openNow) {
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    view.value = "browse";
+    cancelling.value = false;
+    void reload();
+    await nextTick();
+    panel.value?.focus();
+  } else {
+    await nextTick();
+    if (returnFocus?.isConnected) returnFocus.focus();
   }
-);
-
-const percent = computed(() => {
-  const { done_files, total_files } = progress.value;
-  return total_files === 0 ? 0 : Math.min(100, Math.round((done_files / total_files) * 100));
 });
-function mb(b: number) {
-  return (b / 1048576).toFixed(1) + " MB";
-}
-
-async function load(parentId: string | null) {
+watch(view, async () => {
+  await nextTick();
+  if (store.importOpen) panel.value?.focus();
+});
+onBeforeUnmount(() => generation++);
+async function reload() {
+  const request = ++generation;
   loading.value = true;
+  entries.value = [];
+  supported.value = null;
   error.value = null;
   try {
-    entries.value = await invoke<PortableEntry[]>("pd_browse", { parentId });
+    const available = await invoke<boolean>("pd_supported");
+    if (request !== generation || !store.importOpen) return;
+    supported.value = available;
+    if (!available) return;
+    const result = await invoke<PortableEntry[]>("pd_browse", { parentId: null });
+    if (request === generation && store.importOpen) entries.value = result;
   } catch (e) {
-    error.value = String(e);
-    entries.value = [];
-  } finally {
-    loading.value = false;
-  }
+    if (request === generation && store.importOpen) error.value = String(e);
+  } finally { if (request === generation) loading.value = false; }
 }
-function reload() {
-  load(null);
-}
-
-// 选设备 → 自动下钻一层到存储根再导入。
-// 设备根（Apple iPhone）本身不是可复制的文件系统对象，CopyItem 会拷 0；
-// 其直接子节点即存储根（Internal Storage），可被 IFileOperation 整体递归复制。
 async function importDevice(device: PortableEntry) {
+  if (loading.value || view.value !== "browse") return;
+  const request = ++generation;
   loading.value = true;
   error.value = null;
   try {
     const storages = await invoke<PortableEntry[]>("pd_browse", { parentId: device.id });
-    if (storages.length === 0) {
-      error.value = "无法访问该设备存储：请确认手机已解锁，并在手机上点「信任此电脑」后重试";
+    if (request !== generation || !store.importOpen) return;
+    const folders = storages.filter(s => s.is_folder);
+    if (!folders.length) {
+      error.value = "无法访问设备存储，请解锁手机并允许文件传输后重试。";
       return;
     }
-    startImport(storages.map((s) => s.id));
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    loading.value = false;
-  }
+    await startImport(folders.map(s => s.id), request);
+  } catch (e) { if (request === generation) error.value = String(e); }
+  finally { if (request === generation) loading.value = false; }
 }
-
-async function startImport(ids: string[]) {
+async function startImport(ids: string[], request: number) {
   view.value = "importing";
   cancelling.value = false;
   progress.value = { phase: "counting", done_files: 0, total_files: 0, done_bytes: 0 };
+  await nextTick();
+  panel.value?.focus();
   const channel = new Channel<ImportProgress>();
-  channel.onmessage = (m) => {
-    progress.value = m;
-  };
+  channel.onmessage = m => { if (request === generation && view.value === "importing") progress.value = m; };
   try {
     const res = await invoke<ImportResult>("pd_import", { itemIds: ids, onProgress: channel });
-    if (res.cancelled) {
-      // 用户取消：后端已清理临时目录，静默回到浏览态
-      view.value = "browse";
-      return;
-    }
-    if (res.file_count === 0) {
-      view.value = "browse";
-      error.value = "未复制到任何文件（该文件夹可能为空）";
-      return;
-    }
-    // 关闭对话框 + 记录临时目录 + 进入现有扫描链路
+    if (request !== generation) return;
+    if (res.cancelled) { view.value = "browse"; error.value = null; return; }
+    if (!res.file_count) { view.value = "browse"; error.value = "未复制到文件，请确认设备中有可访问的文件。"; return; }
     await store.openImportedDirectory(res.temp_dir);
   } catch (e) {
-    view.value = "browse";
-    error.value = "导入失败：" + String(e);
-  } finally {
-    cancelling.value = false;
-  }
+    if (request === generation) { view.value = "browse"; error.value = "导入失败：" + String(e); }
+  } finally { cancelling.value = false; }
 }
-
-// 请求取消：后端在下一个文件边界中止，pd_import 随后以 cancelled=true 返回收尾
 async function cancelImport() {
   if (cancelling.value) return;
   cancelling.value = true;
-  try {
-    await invoke("pd_cancel_import");
-  } catch {
-    /* 取消请求失败不阻塞，忽略 */
-  }
+  error.value = null;
+  try { await invoke("pd_cancel_import"); }
+  catch (e) { cancelling.value = false; error.value = "取消失败，请重试：" + String(e); }
 }
-
 function tryClose() {
-  if (view.value === "importing") return; // 复制中不允许关闭
+  if (view.value === "importing") return;
+  generation++;
   store.closeImport();
 }
-
-useEventListener(window, "keydown", (e: KeyboardEvent) => {
-  if (!store.importOpen) return;
-  if (e.key === "Escape") {
-    e.preventDefault();
-    tryClose();
-  }
-});
+function onDialogKey(e: KeyboardEvent) {
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); }
+  if (e.key !== "Tab") return;
+  const buttons = Array.from(panel.value?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+  const first = buttons[0], last = buttons[buttons.length - 1];
+  if (!first || !last) { e.preventDefault(); panel.value?.focus(); return; }
+  if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.value)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (document.activeElement === last || document.activeElement === panel.value)) { e.preventDefault(); first.focus(); }
+}
 </script>
 
 <style scoped>
@@ -223,8 +196,8 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 }
 .panel {
   width: 480px;
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 80px);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
@@ -254,7 +227,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 .crumb-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
 .spacer { flex: 1; }
 
-.warn { font-size: 12px; color: #f59e0b; word-break: break-all; }
+.warn { font-size: 12px; color: var(--accent); word-break: break-all; }
 .muted { color: var(--text-secondary); font-size: 12px; padding: 8px 2px; }
 .empty {
   color: var(--text-secondary); font-size: 12px; line-height: 1.7;
@@ -282,7 +255,7 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 
 .dlg-foot {
   display: flex; justify-content: flex-end; align-items: center; gap: 8px;
-  padding: 12px 16px; border-top: 1px solid var(--border);
+  flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--border);
 }
 .foot-hint { font-size: 12px; color: var(--text-secondary); margin-right: auto; }
 
@@ -302,4 +275,9 @@ useEventListener(window, "keydown", (e: KeyboardEvent) => {
 .dlg-enter-from, .dlg-leave-to { opacity: 0; }
 .dlg-enter-active .panel, .dlg-leave-active .panel { transition: transform 0.2s var(--ease-out); }
 .dlg-enter-from .panel, .dlg-leave-to .panel { transform: scale(0.96) translateY(8px); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.x, .btn.xs { min-height: 32px; min-width: 32px; }
+.run-error { padding: 0 16px 12px; }
+.indeterminate { animation: transfer 1.3s ease-in-out infinite alternate; }
+@keyframes transfer { to { transform: translateX(185%); } }
 </style>

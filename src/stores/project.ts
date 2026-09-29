@@ -71,6 +71,9 @@ export const useProjectStore = defineStore("project", () => {
 
   // 导出对话框开关（打开时挂起网格键盘）
   const exportOpen = ref(false);
+  const importOpen = ref(false);
+  // 成功复制的文件保留在本地，重置工作集不删除尚未导出的照片。
+  const importTempDir = ref<string | null>(null);
   const viewFilter = ref<"all" | "marked" | "removed">("all");
   const toast = ref<string | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,6 +165,7 @@ export const useProjectStore = defineStore("project", () => {
     if (isScanning.value) return false;
     const requestId = ++scanRequestId;
     sourceDir.value = path;
+    if (path !== importTempDir.value) importTempDir.value = null;
     phase.value = "scanning";
     isScanning.value = true;
     isRefreshing.value = false;
@@ -348,6 +352,24 @@ export const useProjectStore = defineStore("project", () => {
     exportOpen.value = false;
   }
 
+  function openImport() {
+    if (isScanning.value || phase.value === "preloading" || exportOpen.value || viewerOpen.value) return;
+    importOpen.value = true;
+  }
+
+  function closeImport() {
+    importOpen.value = false;
+  }
+
+  async function openImportedDirectory(path: string): Promise<boolean> {
+    if (!path.trim()) throw new Error("手机导入未返回有效的本地目录");
+    if (isScanning.value) throw new Error("请等待当前扫描完成后再导入");
+    importTempDir.value = path;
+    // 转入现有扫描页面，失败由首页 scanError 展示，避免重开弹窗覆盖错误。
+    importOpen.value = false;
+    return await openDirectory(path);
+  }
+
   function reset() {
     const shouldCancelScan = sourceDir.value !== null;
     ++scanRequestId;
@@ -362,6 +384,8 @@ export const useProjectStore = defineStore("project", () => {
     preload.value = { done: 0, total: 0 };
     viewerOpen.value = false;
     exportOpen.value = false;
+    importOpen.value = false;
+    importTempDir.value = null;
     viewFilter.value = "all";
     toast.value = null;
     isScanning.value = false;
@@ -369,9 +393,9 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   return {
-    sourceDir, files, focusedIndex, isScanning, isRefreshing, scanProgress, scanError, phase, preload, viewerOpen, exportOpen,
+    sourceDir, files, focusedIndex, isScanning, isRefreshing, scanProgress, scanError, phase, preload, viewerOpen, exportOpen, importOpen, importTempDir,
     viewFilter, toast, visibleFiles, exportableFiles, stats, focusedFile,
     openDirectory, refreshDirectory, cancelRefresh, setFilter, skipPreload, toggleMark, removeFile, restoreFile, undoLast, moveFocus, setFocus,
-    openViewer, closeViewer, openExport, closeExport, reset,
+    openViewer, closeViewer, openExport, closeExport, openImport, closeImport, openImportedDirectory, reset,
   };
 });

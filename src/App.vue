@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :inert="store.importOpen">
     <TitleBar />
     <div class="view-host">
       <WorkspaceView v-if="store.phase === 'ready'" />
@@ -7,10 +7,12 @@
       <HomeView v-else />
     </div>
   </div>
+  <DeviceImportView />
 </template>
 
 <script setup lang="ts">
 import { useProjectStore } from "./stores/project";
+import DeviceImportView from "./components/DeviceImportView.vue";
 import TitleBar from "./components/TitleBar.vue";
 import HomeView from "./views/HomeView.vue";
 import PreloadView from "./views/PreloadView.vue";

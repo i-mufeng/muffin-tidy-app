@@ -187,6 +187,11 @@ fn open_path_default<R: tauri::Runtime>(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn pd_supported() -> bool {
+    cfg!(windows)
+}
+
 fn base64_jpeg(bytes: Vec<u8>) -> String {
     use base64::Engine;
     format!(
@@ -256,15 +261,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .register_uri_scheme_protocol("mtidy-mphoto", mphoto_protocol)
-        .setup(|_app| {
-            // 启动即清扫上次会话/崩溃残留的导入临时目录（比退出钩子更稳：崩溃也能清）。
-            // 启动时不可能有正在进行的导入，整目录删除是安全的。
-            let base = std::env::temp_dir().join("muffin-tidy-import");
-            if base.exists() {
-                let _ = std::fs::remove_dir_all(&base);
-            }
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             scan_directory,
             cancel_scan,
@@ -274,6 +270,7 @@ pub fn run() {
             export_files,
             reveal_path,
             open_path_default,
+            pd_supported,
             portable::pd_browse,
             portable::pd_import,
             portable::pd_cancel_import,

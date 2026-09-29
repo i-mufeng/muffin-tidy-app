@@ -1,5 +1,7 @@
 # 手机直连导入（MTP）详细设计
 
+> 本文保留原始方案与历史落地记录。2026-09-29 当前实现、缓存生命周期及验证边界以[修复与验证记录](../testing/phone-import-20260929.md)为准；下文 reset/启动自动清理及相册选择等旧方案不代表当前行为。
+
 > 方案 B：Shell COM 枚举 + 复制到临时目录再扫描
 > 状态：设计稿（待评审 → 进入阶段 0 PoC）
 > 关联代码：`src-tauri/src/scanner.rs`、`src-tauri/src/thumb.rs`、`src/views/HomeView.vue`、`src/stores/project.ts`

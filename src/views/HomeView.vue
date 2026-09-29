@@ -9,6 +9,8 @@
         {{ loading ? '扫描中…' : '📁 打开目录' }}
       </button>
 
+      <button class="btn-phone" :disabled="loading" @click="store.openImport()">📱 从手机导入</button>
+
       <div v-if="error || store.scanError" class="error" role="alert">{{ error || store.scanError }}</div>
 
       <div class="hints">
@@ -32,11 +34,11 @@ const error = ref<string | null>(null);
 
 async function pickDir() {
   error.value = null;
-  const selected = await open({ directory: true, multiple: false });
-  if (!selected || typeof selected !== "string") return;
-
+  if (loading.value) return;
   loading.value = true;
   try {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected || typeof selected !== "string") return;
     await store.openDirectory(selected);
   } catch (e) {
     error.value = String(e);
@@ -52,6 +54,8 @@ async function pickDir() {
   align-items: center;
   justify-content: center;
   height: 100%;
+  overflow-y: auto;
+  padding: 20px;
   background: var(--bg-base);
 }
 
@@ -64,7 +68,9 @@ async function pickDir() {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  min-width: 380px;
+  width: 380px;
+  max-width: 100%;
+  padding: clamp(20px, 5vw, 48px);
 }
 
 .logo { font-size: 48px; }
@@ -127,4 +133,9 @@ kbd {
   font-family: monospace;
   color: var(--text-primary);
 }
+</style>
+
+<style scoped>
+.btn-phone { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 </style>

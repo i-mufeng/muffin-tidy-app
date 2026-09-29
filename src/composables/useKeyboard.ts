@@ -9,7 +9,7 @@ export function useKeyboard(cols: () => number) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     // 大图浏览 / 导出对话框打开时，键盘交给对应组件，网格快捷键挂起
     if (store.viewerOpen) return;
-    if (store.exportOpen) return;
+    if (store.exportOpen || store.importOpen) return;
 
     switch (e.key) {
       case "e":

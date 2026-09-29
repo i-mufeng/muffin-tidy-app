@@ -252,3 +252,61 @@ describe("asynchronous directory scanning", () => {
     expect(store.files[0].status).toBe("marked");
   });
 });
+
+
+describe("phone import workspace", () => {
+  test("imported directory enters the existing scan/preload pipeline", async () => {
+    const store = useProjectStore();
+    store.openImport();
+    expect(store.importOpen).toBe(true);
+    const opened = store.openImportedDirectory("/cache/phone-session");
+    expect(store.importOpen).toBe(false);
+    expect(store.importTempDir).toBe("/cache/phone-session");
+    expect(lastCall("scan_directory").args.path).toBe("/cache/phone-session");
+    lastCall("scan_directory").resolve([media(1, "/cache/phone-session")]);
+    expect(await opened).toBe(true);
+    expect(store.phase).toBe("preloading");
+    expect(store.files[0].sourcePath).toBe("/cache/phone-session/1.jpg");
+    store.reset();
+    expect(store.importTempDir).toBeNull();
+    expect(calls.some(call => call.command === "pd_cleanup")).toBe(false);
+  });
+
+  test("failed imported scan exposes the scan error and preserves the cache location", async () => {
+    const store = useProjectStore();
+    const opened = store.openImportedDirectory("/cache/phone-session");
+    lastCall("scan_directory").reject("read failed");
+    await expect(opened).rejects.toBe("read failed");
+    expect(store.importOpen).toBe(false);
+    expect(store.importTempDir).toBe("/cache/phone-session");
+    expect(store.scanError).toBe("read failed");
+  });
+
+  test("cancelled import scan never reopens the dialog or overwrites a new directory", async () => {
+    const store = useProjectStore();
+    const opened = store.openImportedDirectory("/cache/phone-session");
+    const oldScan = lastCall("scan_directory");
+    store.reset();
+    const newer = store.openDirectory("/new");
+    oldScan.reject("cancelled");
+    expect(await opened).toBe(false);
+    expect(store.importOpen).toBe(false);
+    expect(store.sourceDir).toBe("/new");
+    expect(store.importTempDir).toBeNull();
+    lastCall("scan_directory").resolve([]);
+    expect(await newer).toBe(true);
+  });
+
+  test("rejects empty paths and does not interrupt an existing scan", async () => {
+    const store = useProjectStore();
+    await expect(store.openImportedDirectory(" ")).rejects.toThrow("有效");
+    expect(calls).toHaveLength(0);
+    const opened = store.openDirectory("/photos");
+    store.openImport();
+    expect(store.importOpen).toBe(false);
+    await expect(store.openImportedDirectory("/cache/session")).rejects.toThrow("扫描");
+    expect(store.sourceDir).toBe("/photos");
+    lastCall("scan_directory").resolve([]);
+    await opened;
+  });
+});

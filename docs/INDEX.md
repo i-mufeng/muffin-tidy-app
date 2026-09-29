@@ -1,6 +1,6 @@
 # 文档索引
 
-> 最后更新：2026-06-25
+> 最后更新：2026-09-29
 
 ## 目录结构
 
@@ -14,6 +14,7 @@
 
 | 日期 | 文档 | 说明 |
 |------|------|------|
+| 2026-09-29 | [手机直连修复与验证](./testing/phone-import-20260929.md) | 入口与状态接线、Windows 编译依赖、取消与复制失败、缓存安全及验收边界 |
 | 2026-06-25 | [手机直连导入（MTP）详细设计](./design/2026-06-21-phone-direct-import-design.md) | 订正：§12.2 根因更正为 opener path 作用域为空集（拒一切路径，非「仅目录」）；新增 Rust 命令 `open_path_default` 修复「打开日志」按钮，去掉静默 catch，移除死权限 `opener:allow-open-path` |
 | 2026-06-25 | [手机直连导入（MTP）详细设计](./design/2026-06-21-phone-direct-import-design.md) | 更新：移除 PoC（poc.rs / PoCDevicePanel.vue 及 lib.rs/HomeView.vue 全部引用），正式入口为其超集 |
 | 2026-06-23 | [手机直连导入（MTP）详细设计](./design/2026-06-21-phone-direct-import-design.md) | 更新：§12 阶段 1 落地记录（取消/openPath 修复/错误细化/临时清理；PoC 移除暂缓） |
