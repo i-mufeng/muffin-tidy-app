@@ -241,9 +241,9 @@ fn pair_live_photos(
 
 /// 提取视频时长（秒）。用 nom-exif TrackInfo 的 DurationMs。
 fn extract_video_duration(path: &Path) -> Option<f64> {
-    let ms = MediaSource::file_path(path).ok()?;
+    let ms = MediaSource::open(path).ok()?;
     let mut parser = MediaParser::new();
-    let info: TrackInfo = parser.parse(ms).ok()?;
+    let info: TrackInfo = parser.parse_track(ms).ok()?;
     let v = info.get(TrackInfoTag::DurationMs)?;
     // 用 Display 文本解析前导数值（毫秒），规避不同版本 EntryValue 变体差异
     let cleaned: String = v
@@ -279,14 +279,14 @@ fn extract_image_metadata(path: &Path) -> ImageMetadata {
         exif_info: std::collections::HashMap::new(),
         content_identifier: None,
     };
-    let Ok(ms) = MediaSource::file_path(path) else { return result; };
+    let Ok(ms) = MediaSource::open(path) else { return result; };
     let mut parser = MediaParser::new();
-    let Ok(iter): Result<ExifIter, _> = parser.parse(ms) else { return result; };
+    let Ok(iter): Result<ExifIter, _> = parser.parse_exif(ms) else { return result; };
     let mut found_time = false;
     for entry in iter {
-        let val = entry.get_value().map(|v| v.to_string()).unwrap_or_default();
-        if !found_time && matches!(entry.tag(), Some(ExifTag::DateTimeOriginal) | Some(ExifTag::CreateDate)) {
-            let time = entry.get_value().and_then(|value| value.as_time_components().map(|(time, _)| time))
+        let val = entry.value().map(|v| v.to_string()).unwrap_or_default();
+        if !found_time && matches!(entry.tag().tag(), Some(ExifTag::DateTimeOriginal) | Some(ExifTag::CreateDate)) {
+            let time = entry.value().and_then(|value| value.as_datetime().map(|time| time.into_naive()))
                 .or_else(|| chrono::NaiveDateTime::parse_from_str(val.trim(), "%Y:%m:%d %H:%M:%S").ok());
             if let Some(ndt) = time {
                 use chrono::TimeZone;
@@ -296,11 +296,11 @@ fn extract_image_metadata(path: &Path) -> ImageMetadata {
                 }
             }
         }
-        if entry.tag_code() == 0x9999 && result.content_identifier.is_none() && !val.is_empty() {
+        if entry.tag().code() == 0x9999 && result.content_identifier.is_none() && !val.is_empty() {
             result.content_identifier = Some(val.clone());
         }
         let map = &mut result.exif_info;
-        match entry.tag() {
+        match entry.tag().tag() {
             Some(ExifTag::Make)             => { map.insert("品牌".into(), val); }
             Some(ExifTag::Model)            => { map.insert("型号".into(), val); }
             Some(ExifTag::FNumber)          => { map.insert("光圈".into(), format!("f/{val}")); }

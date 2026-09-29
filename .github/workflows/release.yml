@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: latest
 
@@ -27,15 +27,21 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust (src-tauri/target)
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      - name: Check frontend regressions
+        run: bun test tests/project-scan.test.ts tests/media-queue.test.ts
+
+      - name: Check Rust regressions
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
       - name: Build standalone executable (no installer)
-        run: bun run tauri build --no-bundle
+        run: bun run tauri build --no-bundle -- --locked
 
       - name: Stage & rename exe
         shell: pwsh
